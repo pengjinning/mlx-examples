@@ -11,8 +11,11 @@ def replace_key(key: str) -> str:
 
 
 def convert():
+    # model = AutoModelForCausalLM.from_pretrained(
+    #     "microsoft/phi-2", torch_dtype="auto", trust_remote_code=True
+    # )
     model = AutoModelForCausalLM.from_pretrained(
-        "microsoft/phi-2", torch_dtype="auto", trust_remote_code=True
+        "/Users/ningjinpeng/.cache/modelscope/hub/mengzhao/phi-2", torch_dtype="auto", trust_remote_code=True
     )
     state_dict = model.state_dict()
     weights = {replace_key(k): v.numpy() for k, v in state_dict.items()}

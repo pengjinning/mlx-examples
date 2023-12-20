@@ -158,7 +158,9 @@ def load_model():
     model = Phi2(ModelArgs())
     weights = mx.load("weights.npz")
     model.update(tree_unflatten(list(weights.items())))
-    tokenizer = AutoTokenizer.from_pretrained("microsoft/phi-2", trust_remote_code=True)
+    # tokenizer = AutoTokenizer.from_pretrained("microsoft/phi-2", trust_remote_code=True)
+    tokenizer = AutoTokenizer.from_pretrained(
+        "/Users/ningjinpeng/.cache/modelscope/hub/mengzhao/phi-2", trust_remote_code=True)
     return model, tokenizer
 
 
