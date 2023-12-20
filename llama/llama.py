@@ -23,6 +23,8 @@ class ModelArgs:
     n_kv_heads: int
     norm_eps: float
     vocab_size: int
+    rope_theta: float
+    rope_traditional: bool = True
 
 
 class RMSNorm(nn.Module):
@@ -37,6 +39,27 @@ class RMSNorm(nn.Module):
     def __call__(self, x):
         output = self._norm(x.astype(mx.float32)).astype(x.dtype)
         return self.weight * output
+
+
+class RoPE(nn.RoPE):
+    def __init__(self, dims: int, traditional: bool = False, base: float = 10000):
+        super().__init__(dims, traditional)
+        self.base = base
+
+    def __call__(self, x, offset: int = 0):
+        shape = x.shape
+        x = mx.reshape(x, (-1, shape[-2], shape[-1]))
+        N = x.shape[1] + offset
+        costheta, sintheta = RoPE.create_cos_sin_theta(
+            N, self.dims, offset=offset, base=self.base, dtype=x.dtype
+        )
+
+        rope = (
+            self._compute_traditional_rope if self.traditional else self._compute_rope
+        )
+        rx = rope(costheta, sintheta, x)
+
+        return mx.reshape(rx, shape)
 
 
 class Attention(nn.Module):
@@ -55,7 +78,9 @@ class Attention(nn.Module):
         self.wk = nn.Linear(args.dim, args.n_kv_heads * args.head_dim, bias=False)
         self.wv = nn.Linear(args.dim, args.n_kv_heads * args.head_dim, bias=False)
         self.wo = nn.Linear(args.n_heads * args.head_dim, args.dim, bias=False)
-        self.rope = nn.RoPE(args.head_dim, traditional=True)
+        self.rope = RoPE(
+            args.head_dim, traditional=args.rope_traditional, base=args.rope_theta
+        )
 
     def __call__(
         self,
@@ -212,7 +237,7 @@ def generate(args):
 
     input("Press enter to start generation")
     print("------")
-
+    print(args.prompt)
     x = mx.array([[tokenizer.bos_id()] + tokenizer.encode(args.prompt)])
     skip = 0
     prompt_processing = None
@@ -226,7 +251,7 @@ def generate(args):
             mx.eval(token)
             prompt_processing = toc("Prompt processing", start)
 
-        if len(tokens) >= args.num_tokens:
+        if len(tokens) >= args.max_tokens:
             break
 
         elif (len(tokens) % args.write_every) == 0:
@@ -239,8 +264,7 @@ def generate(args):
     mx.eval(tokens)
     full_gen = toc("Full generation", start)
     s = tokenizer.decode([t.item() for t in tokens])
-    print(s[skip:], end="", flush=True)
-    print()
+    print(s[skip:], flush=True)
     print("------")
     print(prompt_processing)
     print(full_gen)
@@ -270,7 +294,7 @@ def few_shot_generate(args):
                 mx.eval(token)
                 prompt_processing = toc("Prompt processing", start)
 
-            if len(tokens) >= args.num_tokens:
+            if len(tokens) >= args.max_tokens:
                 break
 
             mx.eval(tokens)
@@ -294,7 +318,8 @@ def few_shot_generate(args):
         s = tokenizer.decode([t.item() for t in tokens])
         print(s[skip:], end="", flush=True)
 
-    prompt = open(args.prompt).read().strip()
+    print("[INFO] Loading few-shot examples from: {}".format(args.few_shot))
+    prompt = open(args.few_shot).read().strip()
     while True:
         question = input("Ask a question: ")
         generate(prompt.replace("{}", question))
@@ -315,7 +340,9 @@ def load_model(model_path):
             config["hidden_dim"] = weights["layers.0.feed_forward.w1.weight"].shape[0]
         if config.get("vocab_size", -1) < 0:
             config["vocab_size"] = weights["output.weight"].shape[-1]
-        unused = ["multiple_of", "ffn_dim_multiplier", 'rope_theta']
+        if "rope_theta" not in config:
+            config["rope_theta"] = 10000
+        unused = ["multiple_of", "ffn_dim_multiplier"]
         for k in unused:
             if k in config:
                 config.pop(k)
@@ -330,14 +357,17 @@ if __name__ == "__main__":
         "model", help="Path to the model directory containing the MLX weights"
     )
     parser.add_argument("tokenizer", help="The sentencepiece tokenizer")
-    parser.add_argument("prompt", help="The message to be processed by the model")
+    parser.add_argument(
+        "--prompt",
+        help="The message to be processed by the model. Ignored when --few-shot is provided.",
+        default="In the beginning the Universe was created.",
+    )
     parser.add_argument(
         "--few-shot",
-        action="store_true",
         help="Read a few shot prompt from a file (as in `sample_prompt.txt`).",
     )
     parser.add_argument(
-        "--num-tokens", "-n", type=int, default=100, help="How many tokens to generate"
+        "--max-tokens", "-m", type=int, default=100, help="How many tokens to generate"
     )
     parser.add_argument(
         "--write-every", type=int, default=1, help="After how many tokens to detokenize"
